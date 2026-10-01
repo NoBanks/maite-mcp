@@ -182,8 +182,15 @@ async def main_async():
 
 
 def main_sync():
-    """Sync entry point for the MAITE MCP server."""
+    """Entry point. Transport is chosen by MAITE_MCP_TRANSPORT: stdio (default) or streamable-http
+    (see http_server.py for the MAITE_MCP_* variables)."""
     import asyncio
+
+    from .http_server import run_http, transport_is_http
+
+    if transport_is_http():
+        run_http()
+        return
     asyncio.run(main_async())
 
 

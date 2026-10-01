@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "maite-mcp"
+version = "0.1.0"
+description = "MCP server for MAITE, the sovereign AI companion for goal tracking and personal accountability. stdio and Streamable HTTP (MCP spec 2025-11-25)."
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.11"
+authors = [{ name = "Ryan Hammer (NoBanks Nearby)" }]
+dependencies = [
+    "mcp>=1.27.0",
+    "httpx>=0.28",
+    "pydantic>=2",
+    "starlette>=0.40",
+    "uvicorn>=0.30",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "pytest-asyncio>=0.24"]
+
+[project.scripts]
+maite-mcp = "maite_mcp.server:main_sync"
+
+[project.urls]
+Homepage = "https://github.com/NoBanks/maite-mcp"
+
+[tool.setuptools.packages.find]
+include = ["maite_mcp*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"

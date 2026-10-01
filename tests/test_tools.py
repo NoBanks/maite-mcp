@@ -14,6 +14,22 @@ from maite_mcp.schemas import (
 from maite_mcp.client import MAITEClient, MAITEAPIError
 
 
+def _mock_http_client():
+    """Stand-in for httpx.AsyncClient. MAITEClient calls .request(method=..., url=..., ...), while the
+    tests configure .post / .get return values, so route .request to the per-method mock and derive
+    .is_success from the configured status code. Without this every test got a coroutine back."""
+    m = AsyncMock()
+
+    async def _request(method, url, **kwargs):
+        resp = await getattr(m, method.lower())(url, **kwargs)
+        if isinstance(getattr(resp, "status_code", None), int):
+            resp.is_success = 200 <= resp.status_code < 300
+        return resp
+
+    m.request = AsyncMock(side_effect=_request)
+    return m
+
+
 class TestCreateGoal:
     """Tests for create_goal tool."""
 
@@ -21,7 +37,7 @@ class TestCreateGoal:
     def mock_client(self):
         """Create a mock MAITE client."""
         with patch("maite_mcp.client.httpx.AsyncClient") as mock_client_class:
-            mock_client = AsyncMock()
+            mock_client = _mock_http_client()
             mock_client_class.return_value = mock_client
             yield mock_client
 
@@ -106,7 +122,7 @@ class TestLogJournalEntry:
     def mock_client(self):
         """Create a mock MAITE client."""
         with patch("maite_mcp.client.httpx.AsyncClient") as mock_client_class:
-            mock_client = AsyncMock()
+            mock_client = _mock_http_client()
             mock_client_class.return_value = mock_client
             yield mock_client
 
@@ -192,7 +208,7 @@ class TestCheckProgress:
     def mock_client(self):
         """Create a mock MAITE client."""
         with patch("maite_mcp.client.httpx.AsyncClient") as mock_client_class:
-            mock_client = AsyncMock()
+            mock_client = _mock_http_client()
             mock_client_class.return_value = mock_client
             yield mock_client
 
@@ -309,7 +325,7 @@ class TestGetCompanionResponse:
     def mock_client(self):
         """Create a mock MAITE client."""
         with patch("maite_mcp.client.httpx.AsyncClient") as mock_client_class:
-            mock_client = AsyncMock()
+            mock_client = _mock_http_client()
             mock_client_class.return_value = mock_client
             yield mock_client
 
@@ -406,7 +422,7 @@ class TestSetReminder:
     def mock_client(self):
         """Create a mock MAITE client."""
         with patch("maite_mcp.client.httpx.AsyncClient") as mock_client_class:
-            mock_client = AsyncMock()
+            mock_client = _mock_http_client()
             mock_client_class.return_value = mock_client
             yield mock_client
 
@@ -503,9 +519,11 @@ class TestSetReminder:
         mock_response.text = "Invalid datetime format"
         mock_client.post.return_value = mock_response
 
+        # The schema validates fires_at before any request, so an invalid string never reaches the
+        # API; use a valid datetime and let the mocked 422 exercise the error path.
         input_data = SetReminderInput(
             text="Test reminder",
-            fires_at="invalid-datetime",
+            fires_at="2024-01-15T07:00:00Z",
         )
 
         with pytest.raises(MAITEAPIError) as exc_info:
