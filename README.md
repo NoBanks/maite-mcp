@@ -86,13 +86,14 @@ maite-mcp
 | `MAITE_MCP_BEARER_TOKEN` | unset | When set, every MCP request must send `Authorization: Bearer <token>`. Unset means no auth, loopback development only |
 | `MAITE_MCP_JSON_RESPONSE` | `0` | `1` answers with plain JSON instead of SSE streams |
 | `MAITE_MCP_ALLOWED_HOSTS` | unset | Comma separated `Host` values for DNS rebinding protection, for example `maite-mcp.example.com,127.0.0.1:18800` |
+| `MAITE_MCP_AUTH` | `bearer` | `oauth` turns on the OAuth 2.1 authorization server and account linking described under Alexa+ |
 
 Endpoints:
 
 - `GET /healthz` returns the server name, version, transport, spec version and whether a bearer token is configured. It never returns the token.
 - `POST`, `GET`, `DELETE` on `MAITE_MCP_PATH` is the MCP Streamable HTTP endpoint (sessions are tracked with the `Mcp-Session-Id` header by the official SDK).
 
-Requests without a valid token get `401` with a `WWW-Authenticate: Bearer` header.
+In bearer mode, requests without a valid token get `401` with a `WWW-Authenticate: Bearer` header. In OAuth mode the 401 takes the shape Alexa+ asks for (see below).
 
 Connect with the official Python SDK:
 
@@ -157,15 +158,56 @@ Errors from the backend come back as structured text (`MAITE API Error: <message
 ## Alexa+
 
 Alexa+ connects to self-hosted MCP servers over Streamable HTTP on MCP spec 2025-11-25 through an
-MCP add-on (developer.amazon.com/docs/alexaplus/add-ons/mcp-toolkit-overview.html). What this server
-already provides: the transport, `/healthz`, 401 on missing or wrong token, and the four voice tools
-above. What the add-on flow adds on top, per the quickstart
-(developer.amazon.com/docs/alexaplus/add-ons/mcp-toolkit-quickstart.html): a public HTTPS URL (a
-Cloudflare tunnel in front of `MAITE_MCP_HOST`), round trips under 500 ms, and, for per-user data like
-MAITE's, OAuth 2.1 authorization code with PKCE plus a Protected Resource Metadata document at
-`/.well-known/oauth-protected-resource`. The static bearer token here is the development gate; the
-OAuth layer sits in front of it for the public add-on. Dynamic Client Registration is not supported
-by Alexa+, so the client is registered manually.
+MCP add-on (developer.amazon.com/docs/alexaplus/add-ons/mcp-toolkit-overview.html). Per-user data
+like MAITE's needs account linking, which Alexa+ does with OAuth 2.1 authorization code plus PKCE
+S256, a Protected Resource Metadata document, a statically registered client and refresh tokens
+(developer.amazon.com/docs/alexaplus/add-ons/mcp-toolkit-account-linking.html). This server ships
+that layer in `maite_mcp/oauth.py`. Turn it on with `MAITE_MCP_AUTH=oauth`.
+
+### Setup
+
+```bash
+MAITE_MCP_TRANSPORT=streamable-http \
+MAITE_MCP_AUTH=oauth \
+MAITE_MCP_PUBLIC_URL=https://maite-mcp.example.com \
+MAITE_MCP_OAUTH_CLIENT_ID=<the client id you register with Alexa> \
+MAITE_MCP_OAUTH_CLIENT_SECRET=<the matching secret> \
+MAITE_MCP_OAUTH_REDIRECT_URIS=<every redirect URI alexa-ai configure-account-linking prints, comma separated> \
+MAITE_MCP_LINK_KEY=$(python3 -m maite_mcp.oauth) \
+MAITE_API_BASE=https://your-maite-backend.example \
+maite-mcp
+```
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `MAITE_MCP_PUBLIC_URL` | required | Issuer and public origin, no path. The resource identifier is this plus `MAITE_MCP_PATH`, and it must match the add-on manifest exactly |
+| `MAITE_MCP_OAUTH_CLIENT_ID` | required | The one statically registered client (Alexa+ has no Dynamic Client Registration) |
+| `MAITE_MCP_OAUTH_CLIENT_SECRET` | required unless auth method is `none` | Its secret, compared in constant time at the token endpoint |
+| `MAITE_MCP_OAUTH_CLIENT_AUTH_METHOD` | `client_secret_post` | `client_secret_post`, `client_secret_basic` or `none` |
+| `MAITE_MCP_OAUTH_REDIRECT_URIS` | required | Comma separated. Exact-match validated; an unregistered URI gets a 400, never a redirect |
+| `MAITE_MCP_LINK_KEY` | required | Fernet key that encrypts linked MAITE credentials at rest. Generate with `python3 -m maite_mcp.oauth` |
+| `MAITE_MCP_OAUTH_DB` | `~/.maite-mcp/oauth.sqlite3` | SQLite file for pending requests, codes, tokens and links |
+| `MAITE_MCP_401_WWW_AUTHENTICATE` | `0` | `1` adds `WWW-Authenticate: Bearer resource_metadata=...` to 401s for spec-strict clients. Alexa+ documents that it does not support the header yet, so leave it off for the add-on |
+
+### What it serves
+
+- `/.well-known/oauth-authorization-server` (RFC 8414) with `code_challenge_methods_supported: ["S256"]`, which Alexa+ checks at deploy time.
+- `/.well-known/oauth-protected-resource` and `/.well-known/oauth-protected-resource<MAITE_MCP_PATH>` (RFC 9728). Alexa+ reads the root form; the MCP spec allows either.
+- `/authorize`, `/token`, `/revoke` from the official SDK handlers (PKCE verification, client authentication, redirect URI binding, code expiry).
+- `/link`: the account linking page. The user pastes their MAITE access token, the server proves it with `GET /api/user` on the MAITE backend (the same bearer route MAITE's own mobile client uses, see `server/mobile-auth.ts` in the MAITE app), then mints the authorization code and sends the browser back to Alexa. Passwords are never asked for.
+- Unauthenticated MCP requests get `401` with body `{"error": "unauthorized", "message": "Access token required to use this tool."}` and no `WWW-Authenticate` header, exactly as the Alexa+ quickstart specifies. Discovery works through the well-known PRM URI, which the MCP spec accepts as the alternative to the header.
+
+### Token handling
+
+- Access tokens live 3600 seconds and are bound to this server's resource (RFC 8707 audience check on every request). Refresh tokens live 90 days and rotate on every use; a replayed refresh token is rejected.
+- Authorization codes are single use, expire after 300 seconds, carry 256 bits of entropy.
+- Everything this server issues is stored as a SHA-256 hash. The linked MAITE credential has to be used later on the user's behalf, so it is stored encrypted with `MAITE_MCP_LINK_KEY`, never in plain text.
+- Every tool call in OAuth mode acts as the linked user with that user's own MAITE credential. There is no shared service account and no token passthrough: the Alexa access token never reaches MAITE.
+
+### Known limits
+
+- MAITE today issues bearer tokens only to its Android sign-in flow. A "connect a voice assistant" screen in the MAITE app that hands the user a token to paste is MAITE-side work and is not part of this repository.
+- Not yet exercised against a live Alexa+ device or simulator. Every requirement above was taken from the Amazon documents read on 2026-10-01 and tested in-process.
 
 ## Privacy
 

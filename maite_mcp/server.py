@@ -23,23 +23,51 @@ from . import voice
 
 # Server instance
 SERVER_NAME = "maite-mcp"
-SERVER_VERSION = "1.1.0"
+SERVER_VERSION = "1.2.0"
 
 server = Server(SERVER_NAME)
 
 
+# OAuth mode (http_server.py with MAITE_MCP_AUTH=oauth) installs a resolver that maps the caller's
+# access token to that user's own MAITE credential, so every tool call acts as the linked user and
+# never as a shared service account. stdio and bearer modes leave it None and use MAITE_API_KEY.
+_credential_resolver = None
+
+
+def set_credential_resolver(fn) -> None:
+    global _credential_resolver
+    _credential_resolver = fn
+
+
+def _per_user_api_key() -> str | None:
+    if _credential_resolver is None:
+        return None
+    try:
+        from mcp.server.auth.middleware.auth_context import get_access_token
+    except ImportError:  # pragma: no cover
+        return None
+    access = get_access_token()
+    if access is None:
+        return None
+    key = _credential_resolver(access)
+    if not key:
+        # MCP spec: never fall back to another identity's token (no token passthrough, no shared key).
+        raise ValueError("No MAITE account is linked to this access token. Reconnect MAITE from your assistant app.")
+    return key
+
+
 def get_client() -> MAITEClient:
-    """Get configured MAITE client from environment."""
+    """Get a MAITE client: the linked user's credential in OAuth mode, else MAITE_API_KEY from the environment."""
     api_base = os.environ.get("MAITE_API_BASE")
-    api_key = os.environ.get("MAITE_API_KEY")
     user_lang = os.environ.get("MAITE_USER_LANG", "en")
 
     if not api_base:
         raise ValueError("MAITE_API_BASE environment variable is required")
+    api_key = _per_user_api_key() or os.environ.get("MAITE_API_KEY")
     if not api_key:
         raise ValueError("MAITE_API_KEY environment variable is required")
 
-    return MAITEClient(api_base=api_base, api_key=api_key, default_lang=user_lang)
+    return MAITEClient(api_base=api_base, api_key=api_key, user_lang=user_lang)
 
 
 # Tool definitions

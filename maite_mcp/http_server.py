@@ -18,6 +18,10 @@ Selected by environment, never by code change:
                                           rebinding protection, for example
                                           "maite-mcp.nohumannearby.com,127.0.0.1:18800".
                                           Unset means protection is off (loopback only).
+    MAITE_MCP_AUTH                        "bearer" (default, MAITE_MCP_BEARER_TOKEN gate) or "oauth"
+                                          (OAuth 2.1 + PKCE authorization server and account linking
+                                          for Alexa+, see oauth.py for its MAITE_MCP_OAUTH_* and
+                                          MAITE_MCP_PUBLIC_URL / MAITE_MCP_LINK_KEY variables)
 
 Routes:
     GET  /healthz   200 JSON: name, version, transport, whether a bearer token is configured
@@ -42,6 +46,7 @@ from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
 from mcp.server.transport_security import TransportSecuritySettings
 
 from . import __version__
+from . import server as S
 from .server import SERVER_NAME, server
 
 DEFAULT_HOST = "127.0.0.1"
@@ -58,6 +63,7 @@ class HttpSettings:
     bearer_token: str | None = None
     json_response: bool = False
     allowed_hosts: tuple[str, ...] = ()
+    auth_mode: str = "bearer"  # bearer | oauth
 
     @classmethod
     def from_env(cls) -> "HttpSettings":
@@ -72,6 +78,7 @@ class HttpSettings:
             bearer_token=os.environ.get("MAITE_MCP_BEARER_TOKEN") or None,
             json_response=os.environ.get("MAITE_MCP_JSON_RESPONSE", "0") == "1",
             allowed_hosts=hosts,
+            auth_mode=os.environ.get("MAITE_MCP_AUTH", "bearer").strip().lower() or "bearer",
         )
 
 
@@ -136,15 +143,22 @@ def build_session_manager(settings: HttpSettings) -> StreamableHTTPSessionManage
     )
 
 
-def build_app(settings: HttpSettings | None = None) -> tuple[Starlette, StreamableHTTPSessionManager]:
+def build_app(settings: HttpSettings | None = None, oauth_provider=None) -> tuple[Starlette, StreamableHTTPSessionManager]:
     """Return (starlette_app, session_manager).
 
     The manager must be running (``async with manager.run():``) while requests are served. The
     returned app's lifespan does that under uvicorn; tests that drive the app in-process with
     ``httpx.ASGITransport`` (which does not run lifespan) enter ``manager.run()`` themselves.
+
+    ``auth_mode="oauth"`` wraps the MCP endpoint in the SDK's bearer authentication (tokens issued by
+    oauth.MaiteOAuthProvider) and mounts the authorization server, metadata and link routes. Pass
+    ``oauth_provider`` to supply a pre-built provider (tests); otherwise one is built from the
+    environment. ``auth_mode="bearer"`` is byte-for-byte the previous behaviour.
     """
     settings = settings or HttpSettings.from_env()
     manager = build_session_manager(settings)
+    if settings.auth_mode not in {"bearer", "oauth"}:
+        raise ValueError("MAITE_MCP_AUTH must be bearer or oauth")
 
     async def healthz(_: Request) -> Response:
         return JSONResponse(
@@ -154,7 +168,7 @@ def build_app(settings: HttpSettings | None = None) -> tuple[Starlette, Streamab
                 "transport": TRANSPORT_NAME,
                 "spec": "2025-11-25",
                 "endpoint": settings.path,
-                "auth": "bearer" if settings.bearer_token else "none",
+                "auth": "oauth" if settings.auth_mode == "oauth" else ("bearer" if settings.bearer_token else "none"),
             }
         )
 
@@ -163,15 +177,34 @@ def build_app(settings: HttpSettings | None = None) -> tuple[Starlette, Streamab
         async with manager.run():
             yield
 
-    app = Starlette(
-        routes=[
-            Route("/healthz", healthz, methods=["GET"]),
-            # A Route (not a Mount) so that "/mcp" is served directly; a Mount answered "/mcp" with a
-            # 307 to "/mcp/", which MCP clients do not follow for POST.
-            Route(settings.path, _BearerGate(_McpAsgi(manager), settings.bearer_token), methods=["GET", "POST", "DELETE"]),
-        ],
-        lifespan=lifespan,
-    )
+    routes = [Route("/healthz", healthz, methods=["GET"])]
+    middleware = []
+    if settings.auth_mode == "oauth":
+        from starlette.middleware import Middleware
+        from starlette.middleware.authentication import AuthenticationMiddleware
+
+        from mcp.server.auth.middleware.auth_context import AuthContextMiddleware
+        from mcp.server.auth.middleware.bearer_auth import BearerAuthBackend
+        from mcp.server.auth.provider import ProviderTokenVerifier
+
+        from . import oauth as O
+
+        provider = oauth_provider or O.MaiteOAuthProvider(O.OAuthSettings.from_env(settings.path))
+        S.set_credential_resolver(provider.maite_token_for_access)
+        prm_url = provider.s.public_url + "/.well-known/oauth-protected-resource"
+        mcp_app = AuthContextMiddleware(
+            O.AlexaUnauthorizedGate(_McpAsgi(manager), prm_url, provider.s.www_authenticate_on_401))
+        # AuthenticationMiddleware populates scope["user"] from the bearer token (SDK verifier);
+        # the gate then answers 401 in the shape Alexa+ expects when nothing authenticated.
+        middleware = [Middleware(AuthenticationMiddleware, backend=BearerAuthBackend(ProviderTokenVerifier(provider)))]
+        routes += O.oauth_routes(provider)
+        # A Route (not a Mount) so that "/mcp" is served directly; a Mount answered "/mcp" with a
+        # 307 to "/mcp/", which MCP clients do not follow for POST.
+        routes.append(Route(settings.path, mcp_app, methods=["GET", "POST", "DELETE"]))
+    else:
+        routes.append(Route(settings.path, _BearerGate(_McpAsgi(manager), settings.bearer_token), methods=["GET", "POST", "DELETE"]))
+
+    app = Starlette(routes=routes, middleware=middleware, lifespan=lifespan)
     return app, manager
 
 
