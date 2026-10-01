@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "maite-mcp"
-version = "0.1.0"
+version = "1.1.0"
 description = "MCP server for MAITE, the sovereign AI companion for goal tracking and personal accountability. stdio and Streamable HTTP (MCP spec 2025-11-25)."
 readme = "README.md"
 license = { file = "LICENSE" }

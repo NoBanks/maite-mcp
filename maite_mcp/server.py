@@ -14,11 +14,16 @@ from .schemas import (
     CheckProgressInput,
     GetCompanionResponseInput,
     SetReminderInput,
+    VoiceCheckInInput,
+    LogProgressInput,
+    JournalMoodInput,
+    NextReminderInput,
 )
+from . import voice
 
 # Server instance
 SERVER_NAME = "maite-mcp"
-SERVER_VERSION = "1.0.0"
+SERVER_VERSION = "1.1.0"
 
 server = Server(SERVER_NAME)
 
@@ -126,6 +131,55 @@ TOOLS: list[Tool] = [
             "required": ["text", "fires_at"],
         },
     ),
+    # ---- Voice-shaped tools (Alexa+ and other spoken surfaces). One or two spoken sentences,
+    # under schemas.SPOKEN_MAX_CHARS, no markdown. These hit the MAITE backend's real routes. ----
+    Tool(
+        name="check_in",
+        description="Spoken daily check-in: how many goals are active, which one is furthest along, and the current check-in streak. Returns one or two short sentences meant to be read aloud.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "include_streak": {"type": "boolean", "default": True, "description": "Mention the check-in streak"},
+            },
+            "required": [],
+        },
+    ),
+    Tool(
+        name="log_progress",
+        description="Log progress on a goal by id or by part of its name, with an optional short note and optional new percent. Returns a one-sentence spoken confirmation.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "goal": {"type": "string", "minLength": 1, "maxLength": 120, "description": "Goal id or part of the goal title"},
+                "note": {"type": "string", "maxLength": 240, "description": "Short progress note"},
+                "progress": {"type": "integer", "minimum": 0, "maximum": 100, "description": "New progress percent; omit to keep the current percent"},
+            },
+            "required": ["goal"],
+        },
+    ),
+    Tool(
+        name="journal_mood",
+        description="Log how the user feels right now as a MAITE check-in. Mood is one word (awful, low, neutral, good, great) plus an optional note. Returns a one-sentence spoken acknowledgement.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "mood": {"type": "string", "enum": ["awful", "low", "neutral", "good", "great"], "description": "Current mood"},
+                "note": {"type": "string", "maxLength": 400, "description": "Optional sentence about why"},
+            },
+            "required": ["mood"],
+        },
+    ),
+    Tool(
+        name="next_reminder",
+        description="Say when the user's next MAITE reminder fires (the morning or evening check-in nudge). Returns one spoken sentence.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "push_endpoint": {"type": "string", "maxLength": 2000, "description": "Push subscription endpoint to read settings for; defaults to MAITE_PUSH_ENDPOINT"},
+            },
+            "required": [],
+        },
+    ),
 ]
 
 
@@ -165,6 +219,18 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
             input_data = SetReminderInput(**arguments)
             result = await client.set_reminder(input_data)
             return [TextContent(type="text", text=str(result))]
+
+        elif name == "check_in":
+            return [TextContent(type="text", text=await voice.check_in(client, VoiceCheckInInput(**arguments)))]
+
+        elif name == "log_progress":
+            return [TextContent(type="text", text=await voice.log_progress(client, LogProgressInput(**arguments)))]
+
+        elif name == "journal_mood":
+            return [TextContent(type="text", text=await voice.journal_mood(client, JournalMoodInput(**arguments)))]
+
+        elif name == "next_reminder":
+            return [TextContent(type="text", text=await voice.next_reminder(client, NextReminderInput(**arguments)))]
 
         else:
             raise ValueError(f"Unknown tool: {name}")

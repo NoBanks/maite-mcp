@@ -143,3 +143,54 @@ class SetReminderOutput(BaseModel):
     text: str
     fires_at: datetime
     next_fire_at: datetime
+
+
+# ---------------------------------------------------------------------------
+# Voice-shaped tools (Alexa+ and other spoken surfaces). Added October 2026.
+# These schemas target the MAITE backend's real routes (/api/goals, /api/checkins,
+# /api/notifications/settings), not the /v1 contract the long-form tools above use.
+# ---------------------------------------------------------------------------
+
+from typing import Annotated  # noqa: E402
+
+from pydantic import StringConstraints  # noqa: E402
+
+SPOKEN_MAX_CHARS = 220  # one or two spoken sentences; every voice tool result is capped here
+
+
+class VoiceCheckInInput(BaseModel):
+    """Input schema for check_in. No required fields."""
+
+    include_streak: bool = Field(True, description="Mention the check-in streak in the spoken reply")
+
+
+class LogProgressInput(BaseModel):
+    """Input schema for log_progress. Identify the goal by id or by (part of) its name."""
+
+    goal: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=120)] = Field(
+        ..., description="Goal id or part of the goal title, case-insensitive"
+    )
+    note: Annotated[Optional[str], StringConstraints(strip_whitespace=True, max_length=240)] = Field(
+        None, description="Short progress note to attach"
+    )
+    progress: Annotated[Optional[int], Field(ge=0, le=100)] = Field(
+        None, description="New progress percent. Omit to keep the current percent and only add the note"
+    )
+
+
+class JournalMoodInput(BaseModel):
+    """Input schema for journal_mood."""
+
+    mood: Mood = Field(..., description="One of awful, low, neutral, good, great")
+    note: Annotated[Optional[str], StringConstraints(strip_whitespace=True, max_length=400)] = Field(
+        None, description="Optional sentence about why"
+    )
+
+
+class NextReminderInput(BaseModel):
+    """Input schema for next_reminder. No required fields."""
+
+    push_endpoint: Annotated[Optional[str], StringConstraints(strip_whitespace=True, max_length=2000)] = Field(
+        None,
+        description="Push subscription endpoint whose reminder settings to read. Defaults to MAITE_PUSH_ENDPOINT",
+    )

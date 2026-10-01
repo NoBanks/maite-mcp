@@ -121,3 +121,40 @@ class MAITEClient:
         """Set a reminder linked to a goal or standalone."""
         payload = input_data.model_dump(exclude_none=True)
         return await self._request("POST", "/v1/reminders", json=payload)
+
+    # ------------------------------------------------------------------
+    # Real MAITE backend routes (server/routes.ts in the MAITE app). Used by the
+    # voice-shaped tools. Authentication is the same bearer header; the MAITE
+    # backend accepts it through its mobile-auth middleware.
+    # ------------------------------------------------------------------
+
+    async def list_goals(self) -> list[dict[str, Any]]:
+        """GET /api/goals: every goal for the authenticated user."""
+        data = await self._request("GET", "/api/goals")
+        return data if isinstance(data, list) else data.get("goals", [])
+
+    async def list_checkins(self) -> list[dict[str, Any]]:
+        """GET /api/checkins: every check-in for the authenticated user."""
+        data = await self._request("GET", "/api/checkins")
+        return data if isinstance(data, list) else data.get("checkins", [])
+
+    async def update_goal_progress(self, goal_id: int | str, progress: int, note: str | None = None) -> dict[str, Any]:
+        """PATCH /api/goals/{id}/progress with {progress, noteText}. Returns the updated goal."""
+        payload: dict[str, Any] = {"progress": int(progress)}
+        if note:
+            payload["noteText"] = note
+        return await self._request("PATCH", f"/api/goals/{goal_id}/progress", json=payload)
+
+    async def create_checkin(self, content: str) -> dict[str, Any]:
+        """POST /api/checkins with {content}. Returns the stored check-in plus MAITE's response."""
+        return await self._request("POST", "/api/checkins", json={"content": content})
+
+    async def get_user(self) -> dict[str, Any]:
+        """GET /api/user: the authenticated user's record (used for user_timezone)."""
+        return await self._request("GET", "/api/user")
+
+    async def get_notification_settings(self, endpoint: str) -> dict[str, Any] | None:
+        """GET /api/notifications/settings?endpoint=...: morning and evening nudge settings for one
+        push subscription. The backend returns null when the endpoint has no settings."""
+        data = await self._request("GET", "/api/notifications/settings", params={"endpoint": endpoint})
+        return data if isinstance(data, dict) else None

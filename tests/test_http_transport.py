@@ -76,7 +76,8 @@ async def test_initialize_and_list_tools_over_streamable_http():
                     tools = await session.list_tools()
                     names = sorted(t.name for t in tools.tools)
                     assert names == sorted(
-                        ["create_goal", "log_journal_entry", "check_progress", "get_companion_response", "set_reminder"])
+                        ["create_goal", "log_journal_entry", "check_progress", "get_companion_response", "set_reminder",
+                         "check_in", "log_progress", "journal_mood", "next_reminder"])
                     assert get_sid() is not None
 
 
